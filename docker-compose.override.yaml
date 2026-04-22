@@ -1,0 +1,28 @@
+# =============================================================================
+# Local host port remaps for evo-crm-community
+# =============================================================================
+# This file is merged automatically by Docker Compose when running from this
+# directory. It replaces host port mappings to avoid conflicts with other
+# services already bound to the default ports on this machine (Lexos stack).
+#
+# Affected services:
+#   - postgres       5432  -> 55432
+#   - redis          6379  -> 56379
+#   - evo-bot-runtime 8080 -> 58080
+#
+# Internal container-to-container communication keeps using the original
+# ports via Docker DNS (evo-crm hits "redis:6379" regardless of host mapping).
+# =============================================================================
+
+services:
+  postgres:
+    ports: !override
+      - "55432:5432"
+
+  redis:
+    ports: !override
+      - "56379:6379"
+
+  evo-bot-runtime:
+    ports: !override
+      - "58080:8080"
