@@ -103,7 +103,7 @@ with empty DB credentials.
 
 ### Patch #1 — `evo-ai-crm-community`: use keyId as `raw_message_id`
 
-**Status:** committed to `whitelionred/evo-ai-crm-community@local-fixes` (commit `95eb1cb`)
+**Status:** committed to `whitelionred/evo-ai-crm-community@local-fixes` (commit `95eb1cb`, 2026-04-22)
 
 **File:** [`app/services/whatsapp/evolution_handlers/helpers.rb`](evo-ai-crm-community/app/services/whatsapp/evolution_handlers/helpers.rb#L6)
 
@@ -133,6 +133,62 @@ to `2` (read) as the recipient interacts. Sidekiq should log
 
 **Upstream status:** not reported. When an upstream fix lands, rebase our
 `local-fixes` branch and drop this commit if identical.
+
+### Patch #2 — `evo-ai-crm-community`: download contact avatar from `contacts.update`
+
+**Status:** committed to `whitelionred/evo-ai-crm-community@local-fixes` (commit `c4b9b76`, 2026-04-29)
+
+**File:** [`app/services/whatsapp/incoming_message_evolution_service.rb`](evo-ai-crm-community/app/services/whatsapp/incoming_message_evolution_service.rb#L69)
+
+**Symptom:** contacts in the CRM conversation list always showed the default
+initials placeholder, even when WhatsApp had published a profile picture for
+that contact. Evolution API was sending the URL via `contacts.update`
+webhooks but the CRM ignored it.
+
+**Root cause:** `update_contact_info` had an explicit TODO:
+```ruby
+if profile_pic_url.present?
+  Rails.logger.debug { "... profile pic available: #{profile_pic_url}" }
+  # Could implement profile picture download/update here   ← never implemented
+end
+```
+
+The same file already had `update_inbox_avatar` (lines 159-177) using
+`URI.open` + `ActiveStorage::Blob.attach` to download and attach the inbox
+avatar. The Contact record has the same ActiveStorage avatar association.
+
+**Fix:** added `update_contact_avatar(contact, picture_url)`:
+- Downloads with `URI.open(read_timeout: 15, open_timeout: 5)`.
+- Attaches via `contact.avatar.attach(io:, filename:, content_type:)`.
+- Stores the URL in `contact.additional_attributes['profile_pic_url']` so
+  re-deliveries of the same `contacts.update` (or polled refreshes) skip the
+  download. Comparison is on the path component only because WhatsApp
+  rotates the `oh=`/`oe=` query params on every fetch.
+- Catches `OpenURI::HTTPError`, `Net::ReadTimeout`, `Errno::ECONNRESET` as
+  warnings so transient `pps.whatsapp.net` errors don't poison the job.
+
+**Verify:** trigger a `contacts.update` (the easiest way is to have the
+contact send you a WhatsApp message). Sidekiq should log:
+```
+Evolution API: Downloading avatar for contact <uuid> from: https://pps.whatsapp.net/...
+Evolution API: Avatar attached to contact <uuid>
+```
+
+In Postgres:
+```sql
+SELECT c.name, ab.byte_size, c.additional_attributes->>'profile_pic_url'
+FROM contacts c
+JOIN active_storage_attachments att
+  ON att.record_id::text = c.id::text
+ AND att.record_type = 'Contact' AND att.name = 'avatar'
+JOIN active_storage_blobs ab ON ab.id = att.blob_id;
+```
+Should return the contact with a non-null `byte_size` (typically ~30-50 KB
+JPEG) and the stored URL.
+
+**Upstream status:** not reported. The upstream code explicitly marked this
+as a future enhancement; a PR back would be welcome but the fix is small
+enough that maintaining it as a patch is fine.
 
 ---
 
